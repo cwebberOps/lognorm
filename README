@@ -1,0 +1,48 @@
+SYNPOSIS
+
+lognorm policyfile < logdata
+
+DESCRIPTION
+
+lognorm applies a policy file to lines read from STDIN. Statements in the
+policy file consist of a list of actions preceding conditions,
+expressed as regular expressions and/or assignments. If all conditions are
+matched, each action is executed in sequence. If any condition fails,
+or any action fails, the statement evaluation ends.
+
+EXAMPLES
+
+This example populates a table, userCount, keyed on the "user" variable.
+The userCount for the variable user is incremented for each line matching
+the supplied regular expression on stdin.
+
+  count userCount[user]
+  when user=/username (\S+)/
+
+This example populates a table, ipUserCount, keyed on the "user" variable.
+This example demonstrates assigning to multiple variables, and then using
+them in the table.
+
+  count ipUserCount[ip,user]
+  when ip,user=/ip (\d+\.\d+\.\d+\.\d+) username (\S+)/
+
+CONTACT
+
+Stephen Hock <smhockcode (at) gmail.com>
+
+COPYRIGHT
+
+This file is part of lognorm.
+
+    lognorm is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    lognorm is distributed in the hope that it will be useful, 
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU 
+    General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with lognorm.  If not, see <http://www.gnu.org/licenses/>.

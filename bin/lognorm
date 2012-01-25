@@ -1,0 +1,390 @@
+#!/usr/local/bin/perl
+
+=head1 COPYRIGHT
+
+Copyright 2012 Stephen Hock
+
+This file is part of lognorm.
+
+    lognorm is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    lognorm is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with lognorm.  If not, see <http://www.gnu.org/licenses/>.
+
+=cut
+
+use strict;
+use warnings;
+
+use Date::Parse;
+use Data::Dumper;
+use Getopt::Std;
+use Log::Policy;
+use Log::Data;
+
+my $debug = 0;
+
+sub usage {
+    print STDERR<<EOF
+Usage: $0 [-h] [-d] policy.txt
+EOF
+;
+    exit 1;
+}
+
+sub dprint {
+    if($debug) {
+        print STDERR "@_";
+    }
+}
+
+sub main {
+    my %opts;
+    getopts('hd', \%opts);
+    if(exists $opts{h}) {
+        usage;
+    }
+
+    if(exists $opts{d}) {
+        $debug = 1;
+    }
+
+    if(int(@ARGV) == 0) {
+        usage;
+    }
+
+    my $policy = shift @ARGV;
+    if(! -r $policy) {
+        usage;
+    }
+
+    my $ast = Log::Policy::parse($policy) or die "Error parsing policy.\n";
+    dprint(Dumper($ast));
+	
+
+	my $env = {
+		functions => { parseDate => \&parseDate },
+        state => {},
+        counters => {}
+    };
+
+	$SIG{USR1} = sub { outputCounters($env) };
+
+	while(my $line = <>) {
+	  $env->{line} = $line;
+	  $env->{ts} = time;
+	  evalAst($env, $ast);
+	  delete $env->{line};
+	}
+	
+	outputCounters($env);
+}
+
+sub parseDate {
+  my ($env, $args) = @_;
+  my ($date) = @$args;
+  my $ts = str2time($date);
+  my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($ts);
+  $year += 1900;
+  $mon += 1;
+
+  $env->{ts} = $ts;
+  return [$year, $mon, $mday, $hour, $min, $sec];
+}
+
+sub outputCounters {
+  my ($env) = @_;
+  foreach my $name(keys %{$env->{counters}}) {
+	print "Counter $name\n";
+	foreach my $key(sort { $env->{counters}->{$name}->{$a} <=> $env->{counters}->{$name}->{$b} } keys %{$env->{counters}->{$name}}) {
+	  printf("%s %d\n", $key, $env->{counters}->{$name}->{$key});
+	}
+	print "\n";
+  }
+}
+
+sub evalAst {
+  my ($env, $ast) = @_;
+  dprint("Evaluating $ast->{type}\n");
+  if($ast->{type} eq 'policy') {
+	return evalPolicy($env, $ast);
+  } elsif($ast->{type} eq 'stmt') {
+	return evalStmt($env, $ast);
+  } elsif($ast->{type} eq 'output') {
+	return evalOutput($env, $ast);
+  } elsif($ast->{type} eq 'assign') {
+	return evalAssign($env, $ast);
+  } elsif($ast->{type} eq 'save') {
+	return evalSave($env, $ast);
+  } elsif($ast->{type} eq 'restore') {
+	return evalRestore($env, $ast);
+  } elsif($ast->{type} eq 'forget') {
+	return evalForget($env, $ast);
+  } elsif($ast->{type} eq 'value') {
+	return evalValue($env, $ast);
+  } elsif($ast->{type} eq 'cmpop') {
+	return evalCmp($env, $ast);
+  } elsif($ast->{type} eq 'boolop') {
+	return evalBool($env, $ast);
+  } elsif($ast->{type} eq 'consume') {
+	if(evalRestore($env, $ast)) {
+	  return evalForget($env, $ast);
+	} else {
+	  return undef;
+	}
+  } elsif($ast->{type} eq 'regexp') {
+	return evalRegexp($env, $ast);
+  } elsif($ast->{type} eq 'reference') {
+	return evalRef($env, $ast);
+  } elsif($ast->{type} eq 'count') {
+	return evalCount($env, $ast);
+  } elsif($ast->{type} eq 'funcall') {
+	return evalFuncall($env, $ast);
+  } else {
+	print STDERR "Error: don't know how to evaluate $ast->{type}\n";
+	exit 1;
+  }
+}
+
+sub evalPolicy {
+  my ($env, $policy) = @_;
+  my @nodes = @{$policy->{nodes}};
+  my $return;
+  foreach my $node(@nodes) {
+	$return = evalAst($env, $node);
+  }
+  return $return;
+}
+
+sub evalFuncall {
+  my ($env, $ast) = @_;
+  my $name = $ast->{name};
+  my $top = outermost($env);
+  if(!exists $top->{functions}->{$name}) {
+	print STDERR "Error: no function is defined named '$name'\n";
+	exit 1;
+  }
+  
+  my $fn = $top->{functions}->{$name};
+  my @args = @{$ast->{args}->{nodes}};
+  
+  my @values;
+  foreach my $a(@args) {
+	my $v = evalAst($env, $a);
+	if(!$v) {
+	  return undef;
+	}
+	push(@values, $v);
+  }
+
+  
+  return $fn->($env, \@values);
+
+}
+
+sub evalStmt {
+  my ($env, $stmt) = @_;
+  my $scope = { outer => $env };
+  my @exprs = @{$stmt->{exprs}->{nodes}};
+  my @actions = @{$stmt->{actions}->{nodes}};
+  foreach my $expr(@exprs) {
+	my $return = evalAst($scope, $expr);
+	if(!defined $return || !$return) {
+	  return undef;
+	}
+  }
+
+  my $return;
+  foreach my $action(@actions) {
+	$return = evalAst($scope, $action);
+	if(!defined $return) {
+	  return;
+	}
+  }
+  
+  return $return;
+}
+
+sub evalSave {
+    my ($env, $save) = @_;
+    my $name = $save->{name};
+    my @fields = @{$save->{fields}->{nodes}};
+    my $key = join ",", map { evalAst($env, Log::Data::reference($_)) } @fields;
+	my $top = outermost($env);
+    $top->{state}->{$name}->{$key} = $env;
+	return 1;
+}
+
+sub evalRestore {
+    my ($env, $restore) = @_;
+    my $name = $restore->{name};
+    my @fields = @{$restore->{fields}->{nodes}};
+	my $top = outermost($env);
+    my $key = join ",", map { evalAst($env, Log::Data::reference($_)) } @fields;
+    my $oldenv = $top->{state}->{$name}->{$key};
+	if(!defined $oldenv) {
+	  return undef;
+	}
+
+    foreach my $k(keys %$oldenv) {
+        $env->{$k} = $oldenv->{$k};
+    }
+
+	return 1;
+}
+
+sub evalForget {
+    my ($env, $forget) = @_;
+    my $name = $forget->{name};
+    my @fields = @{$forget->{fields}->{nodes}};
+	my $top = outermost($env);
+    my $key = join ",", map { evalAst($env, Log::Data::reference($_)) } @fields;
+    delete $top->{state}->{$name}->{$key};
+	return 1;
+}
+
+sub evalRegexp {
+  my ($env, $regexp) = @_;
+  my $ref = Log::Data::reference('line');
+  my $line = evalAst($env, $ref);
+  my $re = $regexp->{expr};
+  if(my @v = ($line =~ $re)) {
+	if (int(@v)) {
+	  # Return the first matched value.
+	  return \@v;
+	} 
+  }
+  return undef;
+}
+
+sub evalValue {
+    my ($env, $ast) = @_;
+    return $ast->{value};
+}
+
+sub evalCmp {
+    my ($env, $ast) = @_;
+    my $aval = evalAst($env, $ast->{a});
+    my $bval = evalAst($env, $ast->{b});
+    my $op = $ast->{op};
+    if($op eq '>=') {
+        return $aval >= $bval;
+    } elsif($op eq '<=') {
+        return $aval <= $bval;
+    } elsif($op eq '>') {
+        return $aval > $bval;
+    } elsif($op eq '<') {
+        return $aval < $bval;
+    } elsif($op eq '==') {
+        return $aval == $bval;
+    } elsif($op eq '!=') {
+        return $aval != $bval;
+    }
+}
+
+sub evalBool {
+    my ($env, $ast) = @_;
+    my $aval = evalAst($env, $ast->{a});
+    my $bval = evalAst($env, $ast->{b});
+    my $op = $ast->{op};
+    if($op eq '&&') {
+        return $aval && $bval;
+    } elsif($op eq '||') {
+        return $aval || $bval;
+    }
+}
+
+
+sub evalRef {
+  my ($env, $ref) = @_;
+  my $scope = $env;
+  my $name = $ref->{name};
+  while(defined $scope) {
+	if(exists $scope->{$name}) {
+	  return $scope->{$name};
+	} else {
+	  $scope = $scope->{outer};
+	}
+  }
+
+  print STDERR "Error: $name not defined\n";
+  exit 1;
+}
+
+sub evalAssign {
+  my ($env, $assign) = @_;
+  my @names = @{$assign->{lvalues}->{nodes}};
+  my $value = evalAst($env, $assign->{rvalue});
+  if(!defined $value) {
+	return undef;
+  }
+
+  if(ref $value ne 'ARRAY') {
+	if(int(@names) > 1) {
+	  print STDERR "Error: single value assigned to multiple variables\n";
+	  exit 1;
+	}
+
+	$env->{$names[0]->{name}} = $value;
+  } elsif(ref $value eq 'ARRAY') {
+	if(int(@names) ne int(@$value)) {
+	  print STDERR "Error: number of variables in assign is not the same as number of values\n";
+	  exit 1;
+	}
+  
+	for(my $i = 0; $i < int(@names); $i++) {
+	  my $n = $names[$i]->{name};
+	  my $v = $value->[$i];
+	  $env->{$names[$i]->{name}} = $value->[$i];
+	  dprint "Assign $n=$v\n";
+	}
+
+	return $value->[0];
+  } 
+}
+
+sub evalCount {
+  my ($env, $count) = @_;
+  my $scope = { outer => $env };
+  my $value;
+  foreach my $expr(@{$count->{exprs}->{nodes}}) {
+	$value = evalAst($scope, $expr);
+	if(!defined $value) {
+	  return;
+	}
+  }
+
+  my @fields = @{$count->{fields}->{nodes}};
+  my $name = $count->{name} . "[" . join(",", @fields) . "]";
+  my $key = join ",", map { evalAst($scope, Log::Data::reference($_)) } @fields;
+
+  my $top = outermost($env);
+  $top->{counters}->{$name}->{$key}++;
+  dprint "Incremented $name\[$key\]: $top->{counters}->{$name}->{$key}\n";
+  return $top->{counters}->{$name}->{$key};
+}
+
+sub outermost {
+  my ($env) = @_;
+  while(defined $env->{outer}) {
+	$env = $env->{outer};
+  }
+  return $env;
+}
+
+sub evalOutput {
+  my ($env, $output) = @_;
+  my @fields = @{$output->{fields}->{nodes}};
+  my @values = map { "$_=" . evalAst($env, Log::Data::reference($_)) } @fields;
+  print join(" ", @values) . "\n";
+}
+   
+main();
