@@ -1,0 +1,7 @@
+count request[reqname,clientip,principal,target];
+output ts,year,month,day,reqname,clientip,principal,target,success
+when date,reqname=/^(\S+ \S+ \S+)\s+.+(TGS_REQ)/, 
+     clientip=/(\d+\.\d+\.\d+\.\d+):/, 
+     principal,target=/(<unknown client>|\S+) for (\S+),/,
+     year,month,day,hour,minute,second=parseDate(date),
+     success="t"

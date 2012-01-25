@@ -1,0 +1,16 @@
+count userByProc[procname,user]; 
+output ts,procname,pid,user 
+when procname,pid=/([a-zA-Z][a-zA-Z0-9]+)\[(\d+)\]/, 
+     user=/user\s+(\S+)/
+
+output ts,procname,pid,user 
+when 
+	   procname,pid=/([a-zA-Z][a-zA-Z0-9]+)\[(\d+)\]/, 
+	   user=/user\s*=\s*(\S+)/
+
+count success[procname] 
+when procname=/([a-zA-Z][a-zA-Z0-9]+)\[\d+\]/, /success/
+count error[procname] 
+when procname=/([a-zA-Z][a-zA-Z0-9]+)\[\d+\]/, /error/
+
+

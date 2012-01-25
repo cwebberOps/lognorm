@@ -1,0 +1,2 @@
+output ts,ip,mac,user
+when user,mac,ip=/UserId=(\S+) acctStatInfo=Start callingStation=(\S+) framedIPAddr=(\S+)/

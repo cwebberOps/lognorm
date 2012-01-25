@@ -1,0 +1,26 @@
+forget connection{conn}
+when conn=/conn=(\d+) fd=\d+ closed/
+
+save connection{conn}
+when conn,ip=/conn=(\d+) fd=\d+ ACCEPT from IP=(\d+\.\d+\.\d+\.\d+)/
+
+save binds{conn,op}
+when conn,op,dn=/conn=(\d+)\s+op=(\d+)\s+BIND\s+dn="([^"]+)"/
+
+save search{conn,op}
+when conn,op,filter=/conn=(\d+)\s+op=(\d+)\s+SRCH.+filter="([^"]+)"/
+
+restore connection{conn};
+consume search{conn,op};
+count filters[filter];
+output ip,filter,err,nentries
+when conn,op,err,nentries=/conn=(\d+)\s+op=(\d+)\s+SEARCH RESULT.+err=(\d+) nentries=(\d+)/
+
+restore connection{conn};
+restore binds{conn,op};
+count binds[ip,dn,err]
+when conn,op,err=/conn=(\d+) op=(\d+) RESULT.*err=(\d+)/
+
+restore connection{conn};
+count ipErrors[ip,err]
+when conn,op,err=/conn=(\d+) op=(\d+) RESULT.*err=(\d+)/
